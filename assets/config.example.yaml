@@ -1,0 +1,46 @@
+{
+  "setup": {
+    "version": 1,
+    "completed": false,
+    "confirmed_at": "",
+    "config_hash": "",
+    "sources_hash": "",
+    "answered_fields": [],
+    "confirmed_fields": [],
+    "sources_confirmed": false
+  },
+  "timezone": "Asia/Shanghai",
+  "collection_window_hours": 48,
+  "schedule": {
+    "enabled": false,
+    "frequency": "daily",
+    "time": "09:00",
+    "catch_up_once": false
+  },
+  "sources_file": "sources.md",
+  "output_dir": ".",
+  "collection": {
+    "min_delay_seconds": 0.8,
+    "max_delay_seconds": 1.5,
+    "max_retries": 3,
+    "timeout_seconds": 25,
+    "coverage_threshold": 0.95,
+    "failure_alert_after": 3,
+    "user_agent": "HealthcareIntelligenceMonitor/1.0 (+personal research)"
+  },
+  "retention": {
+    "raw_days": 30,
+    "log_days": 90
+  },
+  "ai": {
+    "mode": "auto",
+    "compatible_api_path": "/chat/completions"
+  },
+  "delivery": {
+    "enabled": false,
+    "recipients": [],
+    "adapters": ["webhook", "smtp"],
+    "smtp_port": 465,
+    "smtp_starttls": false
+  }
+}

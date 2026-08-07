@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# OS
+.DS_Store
+
+# Secrets (template committed, actual values never)
+.env
+!.env.example
+!assets/env.example
+
+# Runtime data (stays outside the repo)
+models/
+*.sqlite3
+*.sqlite
+*.db
+*.zip
+
+# Generated artifacts
+*.html
+# Keep test fixtures
+!assets/fixtures/*.html

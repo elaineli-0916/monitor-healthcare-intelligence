@@ -1,0 +1,4 @@
+interface:
+  display_name: "Healthcare Intelligence Monitor"
+  short_description: "监控医疗健康行业信息，生成可追溯的每日投资研究简报"
+  default_prompt: "使用 $monitor-healthcare-intelligence 初始化医疗健康行业监控，并生成今天的可追溯简报。"
