@@ -989,33 +989,78 @@ if (FAILURES.length > 0) {{
 
 
 if __name__ == '__main__':
-    import sys
-    input_path = sys.argv[1] if len(sys.argv) > 1 else '/tmp/dashboard_data.json'
-    input_path_obj = Path(input_path)
+    import argparse
+    parser = argparse.ArgumentParser(description="JSON -> HTML dashboard. Use --db to read from SQLite.")
+    parser.add_argument("input", nargs="?", default="/tmp/dashboard_data.json",
+                        help="JSON file or data/YYYY-MM-DD directory")
+    parser.add_argument("output", nargs="?", default="",
+                        help="Output HTML path")
+    parser.add_argument("--db", action="store_true",
+                        help="Read all articles from SQLite instead of JSON")
+    parser.add_argument("--runtime-root", default="",
+                        help="Runtime directory (needed for --db)")
+    args = parser.parse_args()
 
-    # If input is a directory (e.g. data/YYYY-MM-DD/), look for dashboard-data.json inside
-    if input_path_obj.is_dir():
-        json_candidate = input_path_obj / "dashboard-data.json"
-        if json_candidate.exists():
-            input_path = str(json_candidate)
+    failures = []
 
-    output_dir = Path(os.environ.get('HEALTHCARE_RUNTIME_ROOT', str(Path(input_path).parent)))
-    default_output = output_dir / f'dashboard_{dt.datetime.now().strftime("%Y_%m_%d_%H_%M")}.html'
-    output_path = sys.argv[2] if len(sys.argv) > 2 else str(default_output)
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    if args.db:
+        import sqlite3
+        runtime = Path(args.runtime_root or os.environ.get("HEALTHCARE_RUNTIME_ROOT", ""))
+        if not runtime or not runtime.exists():
+            print("错误: --db 需要 --runtime-root 或 HEALTHCARE_RUNTIME_ROOT", file=sys.stderr)
+            sys.exit(1)
+        db_path = runtime / "intelligence" / "healthcare_intelligence.sqlite3"
+        if not db_path.exists():
+            print(f"错误: 数据库不存在 {db_path}", file=sys.stderr)
+            sys.exit(1)
 
-    with open(input_path, 'r') as f:
-        data = json.load(f)
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT id, title, summary, source_name as source, source_rating,"
+            " published_at as publish_time, canonical_url as source_url,"
+            " level_1_category, level_2_category,"
+            " classification_method, classification_confidence,"
+            " source_type FROM articles WHERE published_at != ''"
+            " ORDER BY published_at DESC"
+        ).fetchall()
+        conn.close()
 
-    if isinstance(data, dict) and 'articles' in data:
-        articles = data['articles']
-        failures = data.get('failures', [])
-    elif isinstance(data, list):
-        articles = data
-        failures = []
-    else:
         articles = []
-        failures = []
+        for r in rows:
+            a = dict(r)
+            a['tags'] = []
+            a['url'] = a.get('source_url', '')
+            articles.append(a)
+        print(f"从 SQLite 读取 {len(articles)} 篇文章")
 
+        output_dir = runtime
+        default_output = output_dir / "dashboard_all.html"
+        output_path = args.output or str(default_output)
+
+    else:
+        input_path = args.input
+        input_path_obj = Path(input_path)
+        if input_path_obj.is_dir():
+            json_candidate = input_path_obj / "dashboard-data.json"
+            if json_candidate.exists():
+                input_path = str(json_candidate)
+
+        output_dir = Path(os.environ.get('HEALTHCARE_RUNTIME_ROOT', str(Path(input_path).parent)))
+        default_output = output_dir / f'dashboard_{{dt.datetime.now().strftime("%Y_%m_%d_%H_%M")}}.html'
+        output_path = args.output or str(default_output)
+
+        with open(input_path, 'r') as f:
+            data = json.load(f)
+
+        if isinstance(data, dict) and 'articles' in data:
+            articles = data['articles']
+            failures = data.get('failures', [])
+        elif isinstance(data, list):
+            articles = data
+        else:
+            articles = []
+
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
     enriched = enrich_articles(articles)
     generate_html(enriched, output_path, failures=failures)
