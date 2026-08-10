@@ -16,11 +16,10 @@ from typing import Any, Callable
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 SKILL_ROOT = SCRIPT_DIR.parent
-PROJECT_ROOT = SKILL_ROOT.parents[1]
 DEFAULT_RUNTIME_ROOT = Path(
     os.environ.get(
         "HEALTHCARE_RUNTIME_ROOT",
-        str(PROJECT_ROOT.parent / "healthcare-intelligence-runtime"),
+        str(SKILL_ROOT.parent / "healthcare-intelligence-runtime"),
     )
 ).expanduser()
 DEFAULT_CONTRACT_PATH = SKILL_ROOT / "references" / "dashboard-categories.json"
