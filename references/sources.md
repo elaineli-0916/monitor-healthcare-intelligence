@@ -60,6 +60,7 @@ Agent 默认先读取 `source_approval`。只有需要补充行业新闻时，�
 |---|---|---|---|---|
 | 动脉网-最新动态 | 专业媒体 | B | https://www.vbdata.cn/new | 医疗健康行业每日最新动态 |
 | 动脉网-投融资 | 专业媒体 | B | https://www.vbdata.cn/articleList?category=166 | 一级市场投融资事件 |
+| 中国医药报-要闻 | 专业媒体 | B | https://www.cnpharm.com/sy/yw/ | 药品/器械/化妆品监管政策与行业要闻 |
 
 
 ## source_news_cn

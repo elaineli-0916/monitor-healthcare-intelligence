@@ -36,11 +36,16 @@ FAMILY_LABELS = {
 }
 FAMILY_EVENT_TYPES = {
     "投融资": "financing",
+    "融资": "financing",
+    "收购": "financing",
+    "IPO": "financing",
     "并购": "financing",
     "合作授权": "financing",
     "注册申报": "regulatory",
     "产品获批": "regulatory",
     "临床试验": "clinical",
+    "监管获批": "regulatory",
+    "临床研发": "clinical",
 }
 FAMILY_PATTERNS = {
     "financing": re.compile(
@@ -342,6 +347,7 @@ def _migrate_monthly_report_schema(conn: sqlite3.Connection) -> None:
         ("trial_phase_detail", "TEXT"),
         ("data_highlight", "TEXT"),
         ("review_status", "TEXT"),
+        ("track", "TEXT"),
     ]
     for col, typedef in new_event_cols:
         if col not in existing:
@@ -405,26 +411,22 @@ def normalize_article(article: dict[str, Any], report_date: dt.date) -> dict[str
         "companies": [
             clean_text(item) for item in article.get("companies", []) if clean_text(item)
         ],
+        "investors": [
+            clean_text(item) for item in article.get("investors", []) if clean_text(item)
+        ],
         "products": [
             clean_text(item) for item in article.get("products", []) if clean_text(item)
         ],
         "tags": [clean_text(item) for item in article.get("tags", []) if clean_text(item)],
+        "track": clean_text(article.get("track")),
+        "amount_text": clean_text(article.get("amount_text")),
+        "financing_round": clean_text(article.get("financing_round")),
     }
 
 
 def event_family(article: dict[str, Any]) -> str | None:
-    explicit = FAMILY_EVENT_TYPES.get(article.get("event_type", ""))
-    if explicit:
-        return explicit
-    text = f"{article['title']} {article['summary']}"
-    matches = [
-        family for family, pattern in FAMILY_PATTERNS.items() if pattern.search(text)
-    ]
-    if not matches:
-        return None
-    if NEGATIVE_PATTERN.search(text) and "clinical" in matches:
-        return "clinical"
-    return matches[0]
+    # 事件识别以 agent 提取为准，不再用正则猜测事件类别。
+    return FAMILY_EVENT_TYPES.get(article.get("event_type", ""))
 
 
 def is_signal_candidate(article: dict[str, Any], family: str) -> bool:
@@ -433,8 +435,6 @@ def is_signal_candidate(article: dict[str, Any], family: str) -> bool:
     if PLACEHOLDER_PATTERN.search(text) or OUT_OF_SCOPE_PATTERN.search(text):
         return False
     if not MEDICAL_RELEVANCE_PATTERN.search(text):
-        return False
-    if not FAMILY_PATTERNS[family].search(text):
         return False
     if RESEARCH_FORMAT_PATTERN.search(article["title"]):
         concrete_action = {
@@ -465,6 +465,7 @@ def article_entities(
     values: list[tuple[str, str, bool]] = []
     matched = {(entity_type, name) for entity_type, name in watchlist_matches(article, watchlist)}
     values.extend(("company", name, ("company", name) in matched) for name in article["companies"])
+    values.extend(("investor", name, ("investor", name) in matched) for name in article.get("investors", []))
     values.extend(("drug", name, ("drug", name) in matched) for name in article["products"])
     values.extend((entity_type, name, True) for entity_type, name in matched)
     unique: dict[tuple[str, str], tuple[str, str, bool]] = {}
@@ -481,16 +482,36 @@ def article_entities(
 
 def extract_event(article: dict[str, Any], family: str) -> dict[str, Any]:
     text = f"{article['title']} {article['summary']}"
-    amount = AMOUNT_PATTERN.search(text)
-    round_match = ROUND_PATTERN.search(text)
-    regulator = REGULATOR_PATTERN.search(text)
-    decision = DECISION_PATTERN.search(text)
-    phase = PHASE_PATTERN.search(text)
-    phase_text = (
-        re.sub(r"临床$", "", phase.group(0), flags=re.IGNORECASE) if phase else None
+    amount = article.get("amount_text") or (
+        AMOUNT_PATTERN.search(text).group(0) if AMOUNT_PATTERN.search(text) else None
     )
+    round_match = article.get("financing_round") or (
+        ROUND_PATTERN.search(text).group(0) if ROUND_PATTERN.search(text) else None
+    )
+    regulator = article.get("regulator") or (
+        REGULATOR_PATTERN.search(text).group(0) if REGULATOR_PATTERN.search(text) else None
+    )
+    decision = article.get("decision") or (
+        DECISION_PATTERN.search(text).group(0) if DECISION_PATTERN.search(text) else None
+    )
+    phase = article.get("clinical_phase")
+    if not phase and PHASE_PATTERN.search(text):
+        phase = PHASE_PATTERN.search(text).group(0)
+    phase_text = (
+        re.sub(r"临床$", "", phase, flags=re.IGNORECASE) if phase else None
+    )
+    product_name = article.get("product_name")
+    indication = article.get("indication")
+    trial_id = article.get("trial_id")
     negative = bool(NEGATIVE_PATTERN.search(text))
     positive = bool(POSITIVE_PATTERN.search(text))
+    clinical_outcome = article.get("clinical_outcome") or (
+        NEGATIVE_PATTERN.search(text).group(0)
+        if negative and family == "clinical"
+        else POSITIVE_PATTERN.search(text).group(0)
+        if positive and family == "clinical"
+        else None
+    )
     direction = "mixed" if negative and positive else "negative" if negative else "positive" if positive else "neutral"
     if family == "clinical":
         horizon = "中期" if phase_text and re.search(r"III|Ⅲ|三|3", phase_text, re.I) else "长期"
@@ -506,27 +527,17 @@ def extract_event(article: dict[str, Any], family: str) -> dict[str, Any]:
     if PLACEHOLDER_PATTERN.search(text):
         base_confidence = min(base_confidence, 0.35)
     details = {
-        "amount_text": amount.group(0) if amount and family == "financing" else None,
+        "amount_text": amount if amount and family == "financing" else None,
         "financing_round": (
-            round_match.group(0) if round_match and family == "financing" else None
+            round_match if round_match and family == "financing" else None
         ),
-        "regulator": (
-            regulator.group(0).upper()
-            if regulator and family == "regulatory"
-            else None
-        ),
-        "decision": (
-            decision.group(0) if decision and family == "regulatory" else None
-        ),
+        "regulator": (regulator.upper() if regulator and family == "regulatory" else None),
+        "decision": (decision if decision and family == "regulatory" else None),
+        "product_name": (product_name if family in ("regulatory", "clinical") else None),
+        "indication": (indication if family in ("regulatory", "clinical") else None),
+        "trial_id": (trial_id if family == "clinical" else None),
         "clinical_phase": phase_text if family == "clinical" else None,
-        "clinical_outcome": (
-            NEGATIVE_PATTERN.search(text).group(0)
-            if negative
-            and family == "clinical"
-            else POSITIVE_PATTERN.search(text).group(0)
-            if positive and family == "clinical"
-            else None
-        ),
+        "clinical_outcome": (clinical_outcome if family == "clinical" else None),
     }
     return {
         "id": stable_id("event", family, article["id"]),
@@ -719,6 +730,7 @@ def persist_event(
     connection: sqlite3.Connection,
     event: dict[str, Any],
     article: dict[str, Any],
+    entities: list[tuple[str, str, bool]],
     entity_ids: list[str],
     observed_at: str,
 ) -> None:
@@ -731,6 +743,9 @@ def persist_event(
             "decision",
             "clinical_phase",
             "clinical_outcome",
+            "product_name",
+            "indication",
+            "trial_id",
         )
     }
     connection.execute(
@@ -738,9 +753,10 @@ def persist_event(
         INSERT INTO events(
             id, event_family, event_type, title, event_date, amount_text,
             financing_round, regulator, decision, clinical_phase,
-            clinical_outcome, impact_direction, impact_horizon, confidence,
+            clinical_outcome, product_name, indication, trial_id,
+            impact_direction, impact_horizon, confidence, track,
             details_json, first_seen_at, last_seen_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
             event_type=excluded.event_type,
             title=excluded.title,
@@ -751,9 +767,13 @@ def persist_event(
             decision=excluded.decision,
             clinical_phase=excluded.clinical_phase,
             clinical_outcome=excluded.clinical_outcome,
+            product_name=excluded.product_name,
+            indication=excluded.indication,
+            trial_id=excluded.trial_id,
             impact_direction=excluded.impact_direction,
             impact_horizon=excluded.impact_horizon,
             confidence=excluded.confidence,
+            track=excluded.track,
             details_json=excluded.details_json,
             last_seen_at=excluded.last_seen_at
         """,
@@ -769,9 +789,13 @@ def persist_event(
             event["decision"],
             event["clinical_phase"],
             event["clinical_outcome"],
+            event["product_name"],
+            event["indication"],
+            event["trial_id"],
             event["impact_direction"],
             event["impact_horizon"],
             event["confidence"],
+            article.get("track"),
             json.dumps(details, ensure_ascii=False, sort_keys=True),
             observed_at,
             observed_at,
@@ -787,14 +811,15 @@ def persist_event(
         """,
         (event["id"], article["id"], evidence_status(article), article["source_rating"]),
     )
-    for entity_id in entity_ids:
+    for (entity_type, _, _), entity_id in zip(entities, entity_ids):
+        role = "investor" if entity_type == "investor" else "affected"
         connection.execute(
             """
             INSERT INTO event_entities(event_id, entity_id, role)
-            VALUES (?, ?, 'affected')
+            VALUES (?, ?, ?)
             ON CONFLICT(event_id, entity_id) DO UPDATE SET role=excluded.role
             """,
-            (event["id"], entity_id),
+            (event["id"], entity_id, role),
         )
 
 
@@ -821,9 +846,12 @@ def fetch_report_signals(
             s.*, e.event_family, e.event_type, e.title, e.event_date,
             e.amount_text, e.financing_round, e.regulator, e.decision,
             e.clinical_phase, e.clinical_outcome, e.impact_direction,
-            e.impact_horizon, e.details_json, a.source_name, a.canonical_url,
+            e.impact_horizon, e.track, e.product_name, e.indication, e.trial_id,
+            e.details_json, a.source_name, a.canonical_url,
             a.source_rating, es.evidence_status,
             COALESCE(GROUP_CONCAT(DISTINCT en.canonical_name), '') AS entity_names,
+            COALESCE(GROUP_CONCAT(DISTINCT CASE WHEN en.entity_type='company' THEN en.canonical_name END), '') AS company_names,
+            COALESCE(GROUP_CONCAT(DISTINCT CASE WHEN en.entity_type='investor' THEN en.canonical_name END), '') AS investor_names,
             MAX(COALESCE(en.watchlist, 0)) AS watchlist_hit
         FROM signals s
         JOIN events e ON e.id=s.event_id
@@ -941,29 +969,86 @@ def render_report(
     lines.append("")
 
     for family in ("financing", "regulatory", "clinical"):
-        lines.extend(
-            [
-                f"## {FAMILY_LABELS[family]}事件",
-                "",
-                "| 日期 | 事件 | 对象 | 详情 | 方向 | 置信度 | 来源 |",
-                "|---|---|---|---|---|---:|---|",
-            ]
-        )
         rows = [signal for signal in signals if signal["event_family"] == family]
-        if not rows:
-            lines.append("| — | 本窗口无记录 | — | — | — | — | — |")
-        for signal in rows:
-            source = (
-                f"[{markdown_text(signal['source_name'])}]({signal['canonical_url']})"
-                if signal["canonical_url"]
-                else markdown_text(signal["source_name"])
+        if family == "financing":
+            lines.extend(
+                [
+                    f"## {FAMILY_LABELS[family]}事件",
+                    "",
+                    "| 日期 | 公司 | 类型 | 轮次/资产 | 金额 | 交易方/投资方 | 赛道 | 来源 |",
+                    "|---|---|---|---|---|---|---|---|",
+                ]
             )
-            lines.append(
-                f"| {signal['event_date']} | {markdown_text(signal['title'])} | "
-                f"{markdown_text(signal['entity_names']) or '未识别'} | "
-                f"{event_detail(signal)} | {signal['impact_direction']} | "
-                f"{signal['confidence']:.0%} | {source} |"
+            if not rows:
+                lines.append("| — | 本窗口无记录 | — | — | — | — | — | — |")
+            for signal in rows:
+                source = (
+                    f"[{markdown_text(signal['source_name'])}]({signal['canonical_url']})"
+                    if signal["canonical_url"]
+                    else markdown_text(signal["source_name"])
+                )
+                event_type = signal["event_type"]
+                if not event_type or event_type == "融资交易":
+                    event_type = "融资"
+                company = markdown_text(signal["company_names"]) or "未识别"
+                investors = markdown_text(signal["investor_names"]) or "—"
+                track = markdown_text(signal["track"]) or "—"
+                lines.append(
+                    f"| {signal['event_date']} | {company} | {markdown_text(event_type)} | "
+                    f"{markdown_text(signal['financing_round']) or '—'} | "
+                    f"{markdown_text(signal['amount_text']) or '未披露'} | "
+                    f"{investors} | {track} | {source} |"
+                )
+        elif family == "regulatory":
+            lines.extend(
+                [
+                    f"## {FAMILY_LABELS[family]}事件",
+                    "",
+                    "| 日期 | 公司 | 产品 | 适应症 | 监管机构 | 决定 | 来源 |",
+                    "|---|---|---|---|---|---|---|",
+                ]
             )
+            if not rows:
+                lines.append("| — | 本窗口无记录 | — | — | — | — | — |")
+            for signal in rows:
+                source = (
+                    f"[{markdown_text(signal['source_name'])}]({signal['canonical_url']})"
+                    if signal["canonical_url"]
+                    else markdown_text(signal["source_name"])
+                )
+                lines.append(
+                    f"| {signal['event_date']} | "
+                    f"{markdown_text(signal['company_names']) or '未识别'} | "
+                    f"{markdown_text(signal['product_name']) or '—'} | "
+                    f"{markdown_text(signal['indication']) or '—'} | "
+                    f"{markdown_text(signal['regulator']) or '—'} | "
+                    f"{markdown_text(signal['decision']) or '—'} | {source} |"
+                )
+        else:
+            lines.extend(
+                [
+                    f"## {FAMILY_LABELS[family]}事件",
+                    "",
+                    "| 日期 | 公司/申办方 | 资产 | 试验编号 | 阶段 | 状态/数据 | 来源 |",
+                    "|---|---|---|---|---|---|---|",
+                ]
+            )
+            if not rows:
+                lines.append("| — | 本窗口无记录 | — | — | — | — | — |")
+            for signal in rows:
+                source = (
+                    f"[{markdown_text(signal['source_name'])}]({signal['canonical_url']})"
+                    if signal["canonical_url"]
+                    else markdown_text(signal["source_name"])
+                )
+                lines.append(
+                    f"| {signal['event_date']} | "
+                    f"{markdown_text(signal['company_names']) or '未识别'} | "
+                    f"{markdown_text(signal['product_name']) or '—'} | "
+                    f"{markdown_text(signal['trial_id']) or '—'} | "
+                    f"{markdown_text(signal['clinical_phase']) or '—'} | "
+                    f"{markdown_text(signal['clinical_outcome']) or '—'} | {source} |"
+                )
         lines.append("")
 
     lines.extend(["## 趋势与结构", ""])
@@ -1101,7 +1186,7 @@ def process_payload(
                 if not family or not is_signal_candidate(article, family):
                     continue
                 event = extract_event(article, family)
-                persist_event(connection, event, article, entity_ids, observed_at)
+                persist_event(connection, event, article, entities, entity_ids, observed_at)
                 event_records.append((event, article, entities))
 
             family_counts = Counter(event["event_family"] for event, _, _ in event_records)

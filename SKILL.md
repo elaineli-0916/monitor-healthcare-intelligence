@@ -19,9 +19,9 @@ description: 监控公开的医疗健康、医药、保健、生物技术和医�
 |---|---|
 | 初始化 / 配置 | `healthcare_intelligence.py init/configure/setup-status/finalize-setup` |
 | 采集 + 分类 | `dashboard_scraper.py --data-dir data/YYYY-MM-DD` |
+| 事件结构化（Agent） | 读取 `dashboard-data.json` 抽取融资/监管/临床事件 → `events_YYYY-MM-DD.json` |
+| SQLite 入库 + 日报 | `ingest_events.py --events events.json --input dashboard-data.json --runtime-root <runtime>` |
 | HTML 看板 | `generate_dashboard.py data/YYYY-MM-DD output.html` |
-| SQLite 入库 + 信号评分 | `daily_intelligence.py --input dashboard-data.json --runtime-root <runtime>` |
-| AI 助手 / 日报 | `healthcare_assistant/backend/cli.py --runtime <runtime>` |
 
 独立发布前，Agent 必须能说明当前走的是哪条入口、会写哪些外部 runtime 文件、不会触发哪些外部动作。
 
@@ -80,27 +80,25 @@ description: 监控公开的医疗健康、医药、保健、生物技术和医�
 
    产出：`collected.txt` + `dashboard-data.json` + `errors.txt`
 
-3. 生成 HTML 看板：
+3. Agent 事件结构化：用 Agent 自身 LLM 读取 `dashboard-data.json`，识别并去重三类事件（融资交易 / 监管获批 / 临床研发），抽取字段写入 `data/YYYY-MM-DD/events.json`。
+
+   三类事件均以 Agent 识别为准，不用正则硬凑事件类别；临床与监管严格区分（获批/申报/受理/拒绝归监管，启动/入组/达到终点/数据公布归临床）。同一事件多源报道只保留一条。
+
+4. SQLite 入库 + 信号评分 + 日报重渲染：
+
+   ```bash
+   python3 scripts/ingest_events.py \
+     --events <runtime>/data/YYYY-MM-DD/events.json \
+     --input <runtime>/data/YYYY-MM-DD/dashboard-data.json \
+     --runtime-root <runtime>
+   ```
+
+5. 生成 HTML 看板：
 
    ```bash
    python3 scripts/generate_dashboard.py \
      <runtime>/data/YYYY-MM-DD \
      <runtime>/dashboard_YYYY_MM_DD.html
-   ```
-
-4. SQLite 入库 + 信号评分 + 影子日报：
-
-   ```bash
-   python3 scripts/daily_intelligence.py \
-     --input <runtime>/data/YYYY-MM-DD/dashboard-data.json \
-     --runtime-root <runtime>
-   ```
-
-5. 启动 AI 助手生成精简日报（写入 `data/YYYY-MM-DD/digest.txt`）：
-
-   ```bash
-   export HEALTHCARE_RUNTIME_ROOT=<runtime>
-   python3 -m healthcare_assistant.backend.cli
    ```
 
 ---
@@ -121,6 +119,7 @@ description: 监控公开的医疗健康、医药、保健、生物技术和医�
 ## 分类与聚合
 
 - 每条信息分配一个赛道一级分类，可选辅助标签
+- 事件识别（融资/监管/临床）以 Agent 抽取为准；正则只做方向/置信度等辅助评分，不做事件类别硬匹配
 - 风险事件覆盖优先
 - 合并事件时保留所有贡献来源链接
 - V1 不自动交叉验证；不得标记为 `corroborated`
@@ -132,9 +131,11 @@ description: 监控公开的医疗健康、医药、保健、生物技术和医�
 ## 生成影子日报
 
 ```bash
-python3 scripts/daily_intelligence.py \
-  --input <dashboard-data.json> --runtime-root <runtime>
+python3 scripts/ingest_events.py \
+  --events <events.json> --input <dashboard-data.json> --runtime-root <runtime>
 ```
+
+由 `daily_intelligence.py` 的 `process_payload` 完成 SQLite 入库、信号评分和日报渲染。
 
 - 信号评分上限 100：重要性 30 + 关注名单 25 + 新颖性 20 + 证据 15 + 趋势 10
 - 趋势分数至少积累 7 个历史日报日后启用
@@ -147,9 +148,9 @@ python3 scripts/daily_intelligence.py \
 ```
 data/YYYY-MM-DD/
   collected.txt          # 结构化 Markdown（4+1 大类）
-  dashboard-data.json    # 看板 JSON
+  dashboard-data.json    # 采集原始 JSON
+  events.json            # Agent 抽取的结构化事件（融资/监管/临床）
   errors.txt             # 错误日志
-  digest.txt             # AI 助手生成的统一日报
 intelligence/
   healthcare_intelligence.sqlite3
 reports/
@@ -169,12 +170,13 @@ state/
 | `dashboard_scraper.py` | 采集 + 三层分类 → `data/YYYY-MM-DD/` |
 | `generate_dashboard.py` | JSON → HTML 交互看板 |
 | `classification_engine.py` | 三层分类引擎（规则→语义→LLM） |
-| `daily_intelligence.py` | SQLite 入库 + 信号评分 + 影子日报 |
+| `ingest_events.py` | 合并 Agent 事件 + SQLite 入库 + 信号评分 + 日报重渲染 |
+| `daily_intelligence.py` | 入库/评分/渲染引擎（`process_payload`，被 `ingest_events.py` 调用） |
 | `evaluate_classification.py` | 评估分类质量 |
 
 | 参考文档 | 内容 |
 |---|---|
-| `references/sources.md` | 179 个来源注册表 |
+| `references/sources.md` | 179+ 个来源注册表（含 cnpharm 直采） |
 | `references/dashboard-categories.json` | 4+1 大类 → 28 子赛道（当前分类体系） |
 | `references/trust-model.md` | 来源可信度和证据状态 |
 | `references/delivery-and-scheduling.md` | 发送适配器和定时任务 |

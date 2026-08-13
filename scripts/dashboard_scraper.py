@@ -284,15 +284,59 @@ def scrape_vbdata() -> list[dict]:
 
 
 # ═══════════════════════════════════════════════════════════
+def scrape_cnpharm() -> list[dict]:
+    """爬取中国医药报要闻频道: https://www.cnpharm.com/sy/yw/"""
+    html = fetch_html("https://www.cnpharm.com/sy/yw/")
+    articles: list[dict] = []
+
+    boxes = re.findall(
+        r'<li class="box\s*">(.*?)</li>',
+        html, re.DOTALL
+    )
+    for box in boxes:
+        title_m = re.search(
+            r'<a[^>]*title="([^"]*)"[^>]*href="(/c/\d{4}-\d{2}-\d{2}/\d+\.shtml)"[^>]*>(.*?)</a>',
+            box, re.DOTALL
+        )
+        if not title_m:
+            continue
+        title = title_m.group(1).strip()
+        href = title_m.group(2)
+        link = "https://www.cnpharm.com" + href
+
+        date_m = re.search(r'<span class="fr">(\d{4}-\d{2}-\d{2})</span>', box)
+        date = (date_m.group(1) + " 00:00") if date_m else ""
+
+        classification = classify_article_details(title, "", [])
+
+        articles.append({
+            "title": title,
+            "summary": "",
+            "source": "中国医药报",
+            "source_url": link,
+            "source_rating": "B",
+            "publish_time": date,
+            **classification,
+            "source_type": "cnpharm",
+        })
+
+    return articles
+
+
 #  Source 2: ByDrug 聚合来源（精选 A/B/C 级来源）
 # ═══════════════════════════════════════════════════════════
 
 # 从 sources.md 动态加载全部 ByDrug 来源
 def load_bydrug_sources() -> list[dict]:
     """从 references/sources.md 读取所有 source_news_cn 条目"""
-    src_path = Path(__file__).parent.parent / "references" / "sources.md"
-    if not src_path.exists():
-        src_path = Path("skills/monitor-healthcare-intelligence/references/sources.md")
+    candidates = [
+        Path(__file__).parent / "sources.md",
+        Path(__file__).parent.parent / "references" / "sources.md",
+        Path.home() / ".codex" / "skills" / "monitor-healthcare-intelligence" / "references" / "sources.md",
+    ]
+    src_path = next((p for p in candidates if p.exists()), None)
+    if src_path is None:
+        raise FileNotFoundError("无法定位 sources.md：检查了 " + ", ".join(str(p) for p in candidates))
     with open(src_path, 'r') as f:
         src_content = f.read()
     table_start = src_content.index('## source_news_cn')
@@ -889,7 +933,7 @@ def scrape_all(source_filter: str = "", window_start: dt.datetime = None, window
     collection_quality: dict[str, Any] = {}
 
     if not source_filter or source_filter == "vbdata":
-        print("\n[1/3] 动脉网 vbdata.cn（主页 + 投融资频道）")
+        print("\n[1/4] 动脉网 vbdata.cn（主页 + 投融资频道）")
         vb_articles = scrape_vbdata()
         if window_start and window_end:
             vb_articles = filter_by_time_window(vb_articles, window_start, window_end)
@@ -898,8 +942,18 @@ def scrape_all(source_filter: str = "", window_start: dt.datetime = None, window
             print(f"  动脉网: {len(vb_articles)} 篇（去重后）")
         all_articles.extend(vb_articles)
 
+    if not source_filter or source_filter == "cnpharm":
+        print("\n[2/4] 中国医药报 cnpharm.com（要闻频道）")
+        cn_articles = scrape_cnpharm()
+        if window_start and window_end:
+            cn_articles = filter_by_time_window(cn_articles, window_start, window_end)
+            print(f"  中国医药报: {len(cn_articles)} 篇（时间过滤后）")
+        else:
+            print(f"  中国医药报: {len(cn_articles)} 篇")
+        all_articles.extend(cn_articles)
+
     if not source_filter or source_filter == "bydrug":
-        print("\n[2/3] ByDrug 聚合来源")
+        print("\n[3/4] ByDrug 聚合来源")
         bd_articles, bd_failures, bd_metrics = scrape_bydrug(window_start, window_end)
         failures.extend(bd_failures)
         collection_quality["bydrug"] = bd_metrics
@@ -908,7 +962,7 @@ def scrape_all(source_filter: str = "", window_start: dt.datetime = None, window
         all_articles.extend(bd_articles)
 
     if not source_filter:
-        print("\n[3/3] 政府获批来源")
+        print("\n[4/4] 政府获批来源")
         gov_arts, gov_fails = scrape_government()
         if window_start and window_end:
             gov_arts = filter_by_time_window(gov_arts, window_start, window_end)
